@@ -1,0 +1,195 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Mirrors the build -> qemu_smoke -> publish CI shape of the OpenIPC per-SoC
+# u-boot repos, adapted to this tree:
+#   * build.sh runs the vendor image_tool (signed boot images, hence
+#     pycryptodome) and builds hi-gzip (8 KiB window) from source; it needs
+#     Ubuntu 24.04.
+#   * Output is boot-<chip>[-<binning>]-nor.bin. cv610 has 5 DDR/package
+#     binnings (10b/20s/20g/00s/00g) built from one defconfig via
+#     -DPRODUCT_SOCMODEL; cv608 is a single image.
+#   * These are published verbatim (NO u-boot-<soc>-universal.bin): DDR
+#     training is off so each image carries a binning-specific reg table, so
+#     cv610 ships per-binning rather than collapsing to one "universal".
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04        # build.sh / committed hi-gzip target this glibc
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Prepare
+        timeout-minutes: 15
+        run: |
+          # apt mirrors on hosted runners intermittently HANG on the
+          # mirrorlist fetch; bound each attempt with `timeout` so the retry
+          # fires instead of the hang eating the whole step.
+          install() {
+            sudo timeout 180 apt-get update && \
+            sudo timeout 240 apt-get install -y \
+              gcc-arm-linux-gnueabi u-boot-tools lzop gnutls-dev lzma-alone bison flex
+          }
+          for i in 1 2 3 4; do
+            install && break
+            [ "$i" = 4 ] && { echo "apt failed after 4 attempts" >&2; exit 1; }
+            echo "apt attempt $i failed/timed out; retrying in $((i*10))s" >&2
+            sleep $((i*10))
+          done
+          python -m pip install pycryptodome
+          # build.sh relies on bash features when invoked as /bin/sh
+          sudo ln -sf /bin/bash /bin/sh
+
+      - name: Build
+        run: bash build.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-images
+          path: output/boot-*.bin
+
+  # QEMU smoke test — boot the signed NOR boot image in the matching
+  # widgetii/qemu-hisilicon machine and assert a u-boot banner.
+  #   * hi3516cv610 is boot-tested upstream -> HARD gate. cv610's 5 binnings
+  #     differ only by the DDR reg table, which is a no-op under QEMU's
+  #     always-present RAM, so one representative binning (10b) exercises the
+  #     boot path for all of them.
+  #   * hi3516cv608's machine exists but is unvalidated -> SOFT (non-blocking)
+  #     via continue-on-error; drop the `soft` flag once it boots.
+  qemu_smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ matrix.soft || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: hi3516cv610-10b, machine: hi3516cv610, file: boot-hi3516cv610-10b-nor.bin }
+          - { label: hi3516cv608,     machine: hi3516cv608, file: boot-hi3516cv608-nor.bin, soft: true }
+    steps:
+      - name: Install QEMU build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential ninja-build meson pkg-config \
+            libglib2.0-dev libpixman-1-dev libfdt-dev zlib1g-dev \
+            libslirp-dev python3 python3-venv
+
+      - name: Resolve qemu-hisilicon HEAD
+        id: qemu-rev
+        run: |
+          sha=$(git ls-remote https://github.com/widgetii/qemu-hisilicon master | cut -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache qemu-system-arm
+        id: cache-qemu
+        uses: actions/cache@v4
+        with:
+          path: qemu-arm
+          key: qemu-hisilicon-${{ steps.qemu-rev.outputs.sha }}
+
+      - name: Build qemu-system-arm (cache miss)
+        if: steps.cache-qemu.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch master \
+            https://github.com/widgetii/qemu-hisilicon qemu-hisilicon
+          cd qemu-hisilicon
+          bash qemu/setup.sh
+          cp qemu-src/build/qemu-system-arm "$GITHUB_WORKSPACE/qemu-arm"
+          chmod +x "$GITHUB_WORKSPACE/qemu-arm"
+
+      - name: Download boot images
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-images
+
+      - name: Smoke-test in QEMU
+        timeout-minutes: 2
+        run: |
+          UBOOT="$PWD/${{ matrix.file }}"
+          test -f "$UBOOT"
+          dd if=/dev/zero of=/tmp/flash.bin bs=1M count=16 2>/dev/null
+          dd if="$UBOOT" of=/tmp/flash.bin bs=1 conv=notrunc 2>/dev/null
+          mkfifo /tmp/uart.in /tmp/uart.out
+          chmod +x ./qemu-arm
+          ./qemu-arm \
+            -M ${{ matrix.machine }},flash-file=/tmp/flash.bin \
+            -nographic -serial pipe:/tmp/uart \
+            -monitor none > /tmp/qemu.log 2>&1 &
+          QEMU_PID=$!
+          timeout 10 cat /tmp/uart.out > /tmp/uboot.txt || true
+          kill "$QEMU_PID" 2>/dev/null || true
+          wait 2>/dev/null || true
+          echo "== captured u-boot output =="
+          cat /tmp/uboot.txt
+          echo
+          if grep -qE 'U-Boot |Hit any key|CPU:|DRAM:|Board:' /tmp/uboot.txt; then
+            echo "PASS: u-boot booted past startup"
+          else
+            echo "FAIL: u-boot did not print a recognised banner"
+            echo
+            echo "== qemu stderr =="
+            tail -40 /tmp/qemu.log || true
+            exit 1
+          fi
+
+  # Publish job — uploads every signed boot image verbatim to the
+  # OpenIPC/firmware `latest` release. cv608/cv610 are in defib
+  # AVAILABLE_FIRMWARE but defib's flat u-boot-<chip>-universal.bin name is
+  # intentionally NOT produced here (cv610 is per-binning); these boot-*.bin
+  # are selected with a manual `-f` / the cv6xx loader protocol. Failure modes:
+  #   empty GH_TOKEN: secret FIRMWARE_RELEASE_TOKEN unset/unreadable. Set with
+  #     gh secret set FIRMWARE_RELEASE_TOKEN -R OpenIPC/u-boot-hi3516cv6xx
+  #     (fine-grained PAT, Contents: read+write on OpenIPC/firmware).
+  #   404 on upload: the `latest` tag was deleted in OpenIPC/firmware.
+  publish:
+    needs: [build, qemu_smoke]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Download boot images
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-images
+          path: artifacts
+
+      - name: Upload to OpenIPC/firmware latest release
+        env:
+          GH_TOKEN: ${{ secrets.FIRMWARE_RELEASE_TOKEN }}
+        run: |
+          set -eu
+          # Releases API occasionally returns 502/503; retry with backoff.
+          upload() {
+            local f="$1" i
+            for i in 1 2 3 4 5; do
+              if gh release upload latest "$f" --clobber -R OpenIPC/firmware; then
+                return 0
+              fi
+              [ "$i" = "5" ] && return 1
+              echo "upload attempt $i failed; sleeping $((i*10))s" >&2
+              sleep $((i*10))
+            done
+          }
+          shopt -s nullglob
+          files=(artifacts/boot-*.bin)
+          [ "${#files[@]}" -gt 0 ] || { echo "no boot-*.bin artifacts found" >&2; exit 1; }
+          for f in "${files[@]}"; do
+            echo "uploading $(basename "$f")"
+            upload "$f"
+          done
