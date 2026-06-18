@@ -60,29 +60,29 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: boot-images
-          path: output/boot-*.bin
+          path: |
+            output/boot-*.bin
+            output/u-boot-*.bin
 
-  # QEMU smoke test — boot the signed NOR boot image in the matching
-  # widgetii/qemu-hisilicon machine and assert a u-boot banner. Both legs are
-  # SOFT (non-blocking) signal: empirically (PR #2 first run) neither cv610
-  # nor cv608 prints anything when its image_tool-signed boot image is placed
-  # at NOR offset 0 — the machines' "boot tested" status is for KERNEL boot
-  # via qemu-boot/run-<machine>.sh, not bare-u-boot NOR-XIP of a signed V5
-  # image. Kept as informational signal (publish is not gated on it); promote
-  # a leg to a hard gate by dropping its `soft` flag once the machine boots
-  # the signed image. cv610's 5 binnings differ only by the DDR reg table
-  # (a no-op under QEMU's always-present RAM), so one binning (10b) suffices.
+  # QEMU smoke test — boot the RAW u-boot-z.bin (u-boot-<chip>.bin, before the
+  # image_tool signing) from NOR in the matching widgetii/qemu-hisilicon
+  # machine and assert a u-boot banner. The published boot-<chip>-*.bin are
+  # GSL-signed images that only the real boot ROM relocates/verifies; the raw
+  # u-boot-z.bin has a normal reset vector at offset 0 and boots from NOR in
+  # QEMU (the same image qemu-boot/run-cv610-flash.sh uses). It is the same
+  # U-Boot the signed images wrap, so it validates the actual boot code. The
+  # cv610 u-boot is identical across the 5 binnings (only the DDR reg table in
+  # the signed image differs), so one cv610 leg covers them all.
   qemu_smoke:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: ${{ matrix.soft || false }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { label: hi3516cv610-10b, machine: hi3516cv610, file: boot-hi3516cv610-10b-nor.bin, soft: true }
-          - { label: hi3516cv608,     machine: hi3516cv608, file: boot-hi3516cv608-nor.bin, soft: true }
+          - { label: hi3516cv610, machine: hi3516cv610, file: u-boot-hi3516cv610.bin }
+          - { label: hi3516cv608, machine: hi3516cv608, file: u-boot-hi3516cv608.bin }
     steps:
       - name: Install QEMU build deps
         run: |
