@@ -62,7 +62,7 @@ jobs:
           name: boot-images
           path: |
             output/boot-*.bin
-            output/u-boot-*.bin
+            output/smoke-*.bin
 
   # QEMU smoke test — boot the RAW u-boot-z.bin (u-boot-<chip>.bin, before the
   # image_tool signing) from NOR in the matching widgetii/qemu-hisilicon
@@ -81,8 +81,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { label: hi3516cv610, machine: hi3516cv610, file: u-boot-hi3516cv610.bin }
-          - { label: hi3516cv608, machine: hi3516cv608, file: u-boot-hi3516cv608.bin }
+          - { label: hi3516cv610, machine: hi3516cv610, file: smoke-hi3516cv610.bin }
+          - { label: hi3516cv608, machine: hi3516cv608, file: smoke-hi3516cv608.bin }
     steps:
       - name: Install QEMU build deps
         run: |

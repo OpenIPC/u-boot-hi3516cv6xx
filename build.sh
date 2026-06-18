@@ -31,7 +31,7 @@ build_cv610(){
         cp u-boot-${CHIP}.bin image_tool/input/u-boot-original.bin
         # Raw u-boot-z.bin (pre-image_tool) — boots from NOR in QEMU for the
         # smoke gate; identical across binnings, so one copy suffices.
-        cp u-boot-${CHIP}.bin ${BUILD_DIR}/u-boot-${CHIP}.bin
+        cp u-boot-${CHIP}.bin ${BUILD_DIR}/smoke-${CHIP}.bin
         cp reginfo/${reginfo[$SOCMODEL]} image_tool/input/reg_info.bin
         pushd image_tool/oem;python oem_quick_build.py;popd
         mv image_tool/image/oem/boot_image.bin output/boot-${CHIP}-${SOCMODEL}-nor.bin
@@ -50,7 +50,7 @@ build_cv608(){
     
     cp u-boot-${CHIP}.bin image_tool/input/u-boot-original.bin
     # Raw u-boot-z.bin (pre-image_tool) — boots from NOR in QEMU for the smoke gate.
-    cp u-boot-${CHIP}.bin ${BUILD_DIR}/u-boot-${CHIP}.bin
+    cp u-boot-${CHIP}.bin ${BUILD_DIR}/smoke-${CHIP}.bin
     cp reginfo/${reginfo[608]} image_tool/input/reg_info.bin
     pushd image_tool/oem;python oem_quick_build.py;popd
     mv image_tool/image/oem/boot_image.bin output/boot-${CHIP}-nor.bin
