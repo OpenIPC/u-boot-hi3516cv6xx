@@ -793,6 +793,24 @@ static struct spi_nor_info fmc_spi_nor_info_table[] = {
 		&spi_driver_no_qe,
 	},
 
+	/* Puya 3.3V P25Q64H - conservative: single-line ops only */
+	{
+		"P25Q64H", {0x85, 0x60, 0x17}, 3, _8M,  _64K, 3,
+		{
+			&read_std(0, INFINITE, 50),   /* 50MHz */
+			0
+		},
+		{
+			&write_std(0, 256, 86),       /* 86MHz */
+			0
+		},
+		{
+			&erase_sector_64k(0, _64K, 86),  /* 86MHz */
+			0
+		},
+		&spi_driver_no_qe,
+	},
+
 	/* GD GD25LQ128 1.8V */
 	{
 		"GD25LQ128", {0xC8, 0x60, 0x18}, 3, _16M,  _64K, 3,
